@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Медиаресурсный центр</title>
+  <meta name="description" content="Черновик открытого каталога уроков: презентации, конспекты, методические разработки и видео.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c5c4a'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='Georgia,serif' font-size='16' fill='%23f6f1e8'%3EM%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,520;7..72,650&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <span class="mark" aria-hidden="true">М</span>
+      <span class="brand-text">
+        <span class="brand-name">Медиаресурсный центр</span>
+        <span class="brand-sub">Черновик каталога</span>
+      </span>
+    </a>
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="sidebar">Программа</button>
+    <form class="search" id="search-form" role="search">
+      <label class="sr-only" for="search">Поиск по каталогу</label>
+      <input id="search" type="search" placeholder="Урок, предмет или класс" autocomplete="off" enterkeyhint="search">
+      <button type="button" class="search-clear" id="search-clear" hidden>Очистить</button>
+    </form>
+  </header>
+  <div class="shell" id="shell">
+    <div class="backdrop" id="backdrop"></div>
+    <aside class="sidebar" id="sidebar">
+      <nav id="nav" aria-label="Программа"></nav>
+    </aside>
+    <main id="main"></main>
+  </div>
+  <noscript>
+    <p class="noscript">Каталог собран на JavaScript. Включите его, чтобы увидеть дерево и карточки уроков.</p>
+  </noscript>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
