@@ -11,11 +11,37 @@
   var query = "";
 
   var MATERIALS = [
-    { title: "Презентация", text: "Смотреть в браузере и скачать файл." },
-    { title: "Конспект", text: "Текст урока." },
-    { title: "Методическая разработка", text: "Как построен урок." },
-    { title: "Видео", text: "Запись объяснения." }
+    {
+      id: "presentation",
+      title: "Презентация",
+      kind: "presentation",
+      accept: ".ppt,.pptx,.pptm,.pps,.ppsx,.ppsm,.pot,.potx,.potm,.odp,.pdf,.key,.ptx"
+    },
+    {
+      id: "method",
+      title: "Методическая разработка",
+      kind: "any",
+      accept: ""
+    },
+    {
+      id: "video",
+      title: "Видео",
+      kind: "video",
+      accept: "video/*,.mp4,.m4v,.webm,.ogg,.ogv,.mov,.mkv,.avi,.wmv,.mpeg,.mpg,.m2ts,.3gp,.flv"
+    }
   ];
+  var renderGen = 0;
+  var objectUrls = [];
+  var dbPromise = null;
+  var META_KEY = "mrc-presentation-materials-v1";
+  var PRESENTATION_EXT = {
+    ppt: 1, pptx: 1, pptm: 1, pps: 1, ppsx: 1, ppsm: 1,
+    pot: 1, potx: 1, potm: 1, odp: 1, pdf: 1, key: 1, ptx: 1
+  };
+  var VIDEO_EXT = {
+    mp4: 1, m4v: 1, webm: 1, ogg: 1, ogv: 1, mov: 1, mkv: 1,
+    avi: 1, wmv: 1, mpeg: 1, mpg: 1, m2ts: 1, "3gp": 1, flv: 1
+  };
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -349,7 +375,6 @@
     top.appendChild(el("span", {}, ["Урок " + lesson.n]));
     link.appendChild(top);
     link.appendChild(el("p", { class: "mini-title" }, [lesson.title]));
-    link.appendChild(el("p", { class: "mini-status" }, ["Файлы ещё не приложены"]));
     return link;
   }
 
@@ -393,7 +418,7 @@
     var numbers = stats();
     var row = el("dl", { class: "stats" });
     [
-      [numbers.lessons, "урок в черновике", "урока в черновике", "уроков в черновике"],
+      [numbers.lessons, "урок в каталоге", "урока в каталоге", "уроков в каталоге"],
       [numbers.filled, "предмет с уроками", "предмета с уроками", "предметов с уроками"],
       [numbers.empty, "предмет без уроков", "предмета без уроков", "предметов без уроков"]
     ].forEach(function (item) {
@@ -407,10 +432,9 @@
 
   function renderHome() {
     var root = page();
-    root.appendChild(el("p", { class: "kicker" }, ["Черновик"]));
     root.appendChild(el("h1", {}, [catalog.title]));
     root.appendChild(el("p", { class: "lead" }, [
-      "Открытый каталог уроков. На карточке урока четыре места: презентация, конспект, методическая разработка и видео. Полностью внесены планы математики 5 и 6 классов, алгебры, геометрии без профиля 10 и 11 классов, вероятности и статистики, биологии и физики. Остальные предметы пока с отдельными уроками из Structure_test."
+      "Открытый каталог уроков. К каждому уроку можно приложить презентацию, методическую разработку и видео."
     ]));
     root.appendChild(statRow());
     catalog.departments.forEach(function (dept) {
@@ -434,7 +458,7 @@
     root.appendChild(el("h1", {}, [ctx.d.title]));
     root.appendChild(el("p", { class: "lead" }, [
       count
-        ? count + " " + plural(count, "урок", "урока", "уроков") + " в черновике."
+        ? count + " " + plural(count, "урок", "урока", "уроков") + "."
         : "В этой кафедре уроков пока нет."
     ]));
     ctx.d.subjects.forEach(function (subject) {
@@ -459,8 +483,8 @@
     }
     root.appendChild(el("p", { class: "lead" }, [
       count
-        ? count + " " + plural(count, "урок", "урока", "уроков") + " в черновике. Список уроков открывается в выбранном классе."
-        : "Классы уже стоят в программе. Уроков в черновике пока нет."
+        ? count + " " + plural(count, "урок", "урока", "уроков") + ". Список уроков открывается в выбранном классе."
+        : "Классы уже стоят в программе. Уроков пока нет."
     ]));
     root.appendChild(gradeLinks(ctx.d, ctx.s));
     main.appendChild(root);
@@ -476,7 +500,7 @@
     root.appendChild(el("p", { class: "kicker" }, [ctx.s.title]));
     root.appendChild(el("h1", {}, [ctx.g.title]));
     if (!ctx.g.lessons.length) {
-      root.appendChild(el("p", { class: "lead" }, ["В программе этот класс есть. Уроков в черновике пока нет."]));
+      root.appendChild(el("p", { class: "lead" }, ["В программе этот класс есть. Уроков пока нет."]));
       main.appendChild(root);
       return;
     }
@@ -488,8 +512,421 @@
     main.appendChild(root);
   }
 
+  function extOf(name) {
+    var match = /\.([a-z0-9]+)$/i.exec(name || "");
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function fileAllowed(kind, file) {
+    if (kind === "any") return true;
+    var ext = extOf(file.name);
+    if (kind === "presentation") return !!PRESENTATION_EXT[ext];
+    if (kind === "video") return !!VIDEO_EXT[ext] || /^video\//.test(file.type || "");
+    return false;
+  }
+
+  function rejectMessage(kind) {
+    if (kind === "video") return "Нужен видеофайл.";
+    return "Для презентации подходят PPT, PPTX, PDF, ODP и похожие файлы.";
+  }
+
+  function isPlayableVideo(meta) {
+    var ext = extOf(meta.name);
+    if (ext === "mp4" || ext === "m4v" || ext === "webm" || ext === "ogg" || ext === "ogv") return true;
+    var type = meta.type || "";
+    return type === "video/mp4" || type === "video/webm" || type === "video/ogg";
+  }
+
+  function formatSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + " Б";
+    if (n < 1048576) return Math.max(1, Math.round(n / 1024)) + " КБ";
+    var mb = n / 1048576;
+    var text = mb >= 10 ? String(Math.round(mb)) : mb.toFixed(1).replace(/\.0$/, "").replace(".", ",");
+    return text + " МБ";
+  }
+
+  function normalizeLink(raw) {
+    var text = String(raw || "").trim();
+    if (!text || /\s/.test(text)) return null;
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(text)) text = "https://" + text;
+    var url;
+    try {
+      url = new URL(text);
+    } catch (e) {
+      return null;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!url.hostname) return null;
+    return url.href;
+  }
+
+  function lessonKey(ctx) {
+    return ctx.d.id + "/" + ctx.s.id + "/" + ctx.g.id + "/" + ctx.l.id;
+  }
+
+  function emptyRecord() {
+    return {
+      presentation: { links: [], files: [] },
+      method: { links: [], files: [] },
+      video: { links: [], files: [] }
+    };
+  }
+
+  function normalizeRecord(materials) {
+    var record = emptyRecord();
+    MATERIALS.forEach(function (material) {
+      var slot = materials && materials[material.id] ? materials[material.id] : {};
+      record[material.id] = {
+        files: Array.isArray(slot.files) ? slot.files : [],
+        links: Array.isArray(slot.links) ? slot.links : []
+      };
+    });
+    return record;
+  }
+
+  function revokeUrls() {
+    objectUrls.forEach(function (url) {
+      URL.revokeObjectURL(url);
+    });
+    objectUrls = [];
+  }
+
+  function newId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function readMeta() {
+    try {
+      var parsed = JSON.parse(localStorage.getItem(META_KEY) || "{}");
+      if (!parsed || typeof parsed !== "object") return {};
+      return parsed;
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function writeMeta(all) {
+    localStorage.setItem(META_KEY, JSON.stringify(all));
+  }
+
+  function openDb() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) {
+        reject(new Error("indexedDB"));
+        return;
+      }
+      var request = indexedDB.open("mrc-presentation-files", 1);
+      request.onupgradeneeded = function () {
+        request.result.createObjectStore("files");
+      };
+      request.onsuccess = function () { resolve(request.result); };
+      request.onerror = function () { reject(request.error); };
+    });
+    return dbPromise;
+  }
+
+  function idbGet(id) {
+    return openDb().then(function (database) {
+      return new Promise(function (resolve, reject) {
+        var request = database.transaction("files", "readonly").objectStore("files").get(id);
+        request.onsuccess = function () { resolve(request.result || null); };
+        request.onerror = function () { reject(request.error); };
+      });
+    });
+  }
+
+  function idbPut(id, blob) {
+    return openDb().then(function (database) {
+      return new Promise(function (resolve, reject) {
+        var tx = database.transaction("files", "readwrite");
+        tx.objectStore("files").put(blob, id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+        tx.onabort = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function idbDelete(id) {
+    return openDb().then(function (database) {
+      return new Promise(function (resolve, reject) {
+        var tx = database.transaction("files", "readwrite");
+        tx.objectStore("files").delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+        tx.onabort = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function canEdit() {
+    return true;
+  }
+
+  function loadMaterials(key) {
+    return Promise.resolve(normalizeRecord(readMeta()[key]));
+  }
+
+  function updateSlot(key, slotId, change) {
+    var all = readMeta();
+    var record = normalizeRecord(all[key]);
+    record[slotId] = change(record[slotId]);
+    all[key] = record;
+    writeMeta(all);
+  }
+
+  function showError(node, text) {
+    if (!text) {
+      node.hidden = true;
+      node.textContent = "";
+      return;
+    }
+    node.hidden = false;
+    node.textContent = text;
+  }
+
+  function addLinks(key, slotId, raw) {
+    var parts = String(raw || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return Promise.resolve("");
+    var hrefs = [];
+    for (var i = 0; i < parts.length; i += 1) {
+      var href = normalizeLink(parts[i]);
+      if (!href) return Promise.resolve("Нужна ссылка на сайт: http или https.");
+      hrefs.push(href);
+    }
+    try {
+      updateSlot(key, slotId, function (slot) {
+        var links = slot.links.slice();
+        hrefs.forEach(function (href) {
+          links.push({ id: newId(), href: href });
+        });
+        return { files: slot.files, links: links };
+      });
+    } catch (error) {
+      return Promise.resolve("Не удалось сохранить ссылку.");
+    }
+    return Promise.resolve("");
+  }
+
+  function addFiles(key, material, fileList) {
+    var accepted = [];
+    var rejected = false;
+    var tooBig = false;
+    Array.prototype.forEach.call(fileList || [], function (file) {
+      if (file.size > 512 * 1024 * 1024) tooBig = true;
+      else if (fileAllowed(material.kind, file)) accepted.push(file);
+      else rejected = true;
+    });
+    if (tooBig) return Promise.resolve({ message: "Файл больше 512 МБ." });
+    if (!accepted.length) return Promise.resolve({ message: rejectMessage(material.kind) });
+    var saved = [];
+    var chain = Promise.resolve("");
+    accepted.forEach(function (file) {
+      chain = chain.then(function (message) {
+        if (message) return message;
+        var id = newId();
+        return idbPut(id, file).then(function () {
+          saved.push({ id: id, name: file.name, size: file.size, type: file.type || "" });
+          return "";
+        }, function () {
+          return "Не удалось сохранить файл. В браузере могло не хватить места.";
+        });
+      });
+    });
+    return chain.then(function (message) {
+      if (saved.length) {
+        try {
+          updateSlot(key, material.id, function (slot) {
+            return { files: slot.files.concat(saved), links: slot.links };
+          });
+        } catch (error) {
+          return { message: "Не удалось сохранить файл." };
+        }
+      }
+      if (!message && rejected) message = rejectMessage(material.kind);
+      return { message: message || "" };
+    });
+  }
+
+  function paintFiles(list, material, data, key, gen, onChange) {
+    list.innerHTML = "";
+    (data.files || []).forEach(function (meta) {
+      var item = el("li", { class: "slot-file" });
+      var row = el("div", { class: "slot-row" });
+      var playable = isPlayableVideo(meta);
+      var pdf = extOf(meta.name) === "pdf" || meta.type === "application/pdf";
+      var video = null;
+      if (playable) {
+        video = el("video", { class: "slot-video", controls: "controls", preload: "metadata" });
+        item.appendChild(video);
+      }
+      var link = el("a", { class: "slot-name", title: meta.name }, [meta.name]);
+      if (pdf) {
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      } else {
+        link.setAttribute("download", meta.name);
+      }
+      idbGet(meta.id).then(function (blob) {
+        if (gen !== renderGen || !blob) return;
+        var url = URL.createObjectURL(blob);
+        objectUrls.push(url);
+        if (video) video.src = url;
+        link.href = url;
+      });
+      row.appendChild(link);
+      row.appendChild(el("span", { class: "slot-size" }, [formatSize(meta.size)]));
+      if (canEdit()) {
+        var remove = el("button", { type: "button", class: "slot-remove" }, ["Убрать"]);
+        remove.addEventListener("click", function () {
+          remove.disabled = true;
+          try {
+            updateSlot(key, material.id, function (slot) {
+              return {
+                files: slot.files.filter(function (file) { return file.id !== meta.id; }),
+                links: slot.links
+              };
+            });
+          } catch (error) {
+            if (gen !== renderGen) return;
+            remove.disabled = false;
+            onChange("Не удалось убрать файл.");
+            return;
+          }
+          idbDelete(meta.id).then(function () {
+            if (gen !== renderGen) return;
+            onChange("");
+          }, function () {
+            if (gen !== renderGen) return;
+            onChange("");
+          });
+        });
+        row.appendChild(remove);
+      }
+      item.appendChild(row);
+      list.appendChild(item);
+    });
+  }
+
+  function paintLinks(list, material, data, key, gen, onChange) {
+    list.innerHTML = "";
+    (data.links || []).forEach(function (item) {
+      var safe = normalizeLink(item.href);
+      if (!safe) return;
+      var row = el("li", { class: "slot-row" });
+      row.appendChild(el("a", {
+        href: safe,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: safe
+      }, [safe]));
+      if (canEdit()) {
+        var remove = el("button", { type: "button", class: "slot-remove" }, ["Убрать"]);
+        remove.addEventListener("click", function () {
+          remove.disabled = true;
+          try {
+            updateSlot(key, material.id, function (slot) {
+              return {
+                files: slot.files,
+                links: slot.links.filter(function (link) { return link.id !== item.id; })
+              };
+            });
+          } catch (error) {
+            if (gen !== renderGen) return;
+            remove.disabled = false;
+            onChange("Не удалось убрать ссылку.");
+            return;
+          }
+          if (gen !== renderGen) return;
+          onChange("");
+        });
+        row.appendChild(remove);
+      }
+      list.appendChild(row);
+    });
+  }
+
+  function renderSlot(material, key, gen, data) {
+    var slot = el("section", { class: "slot" });
+    var files = el("ul", { class: "slot-list" });
+    var links = el("ul", { class: "slot-list" });
+    var error = el("p", { class: "slot-error" });
+    error.hidden = true;
+    slot.appendChild(el("h3", {}, [material.title]));
+    slot.appendChild(files);
+
+    function reload(message) {
+      loadMaterials(key).then(function (record) {
+        if (gen !== renderGen) return;
+        var fresh = record[material.id];
+        paintFiles(files, material, fresh, key, gen, reload);
+        paintLinks(links, material, fresh, key, gen, reload);
+        showError(error, message);
+      }, function () {
+        if (gen !== renderGen) return;
+        showError(error, message || "Не удалось обновить материалы.");
+      });
+    }
+
+    if (canEdit()) {
+      var input = el("input", { type: "file", multiple: "multiple" });
+      if (material.accept) input.setAttribute("accept", material.accept);
+      var labelText = document.createTextNode("Добавить файлы");
+      var label = el("label", { class: "file-pick" });
+      label.appendChild(labelText);
+      label.appendChild(input);
+      var form = el("form", { class: "slot-link" });
+      var linkInput = el("input", {
+        type: "text",
+        inputmode: "url",
+        placeholder: "Ссылка на сторонний ресурс",
+        "aria-label": "Ссылка на сторонний ресурс",
+        autocomplete: "off",
+        spellcheck: "false"
+      });
+      form.appendChild(linkInput);
+      form.appendChild(el("button", { type: "submit" }, ["Добавить"]));
+      slot.appendChild(label);
+      slot.appendChild(links);
+      slot.appendChild(form);
+      input.addEventListener("change", function () {
+        if (!input.files || !input.files.length) return;
+        label.classList.add("is-busy");
+        input.disabled = true;
+        labelText.data = "Сохраняю…";
+        addFiles(key, material, input.files).then(function (result) {
+          if (gen !== renderGen) return;
+          input.value = "";
+          input.disabled = false;
+          label.classList.remove("is-busy");
+          labelText.data = "Добавить файлы";
+          reload(result.message);
+        });
+      });
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (!linkInput.value.trim()) return;
+        addLinks(key, material.id, linkInput.value).then(function (message) {
+          if (gen !== renderGen) return;
+          if (!message) linkInput.value = "";
+          reload(message);
+        });
+      });
+    } else {
+      slot.appendChild(links);
+    }
+
+    slot.appendChild(error);
+    paintFiles(files, material, data, key, gen, reload);
+    paintLinks(links, material, data, key, gen, reload);
+    return slot;
+  }
+
   function renderLesson(ctx) {
     var root = page();
+    var key = lessonKey(ctx);
     root.classList.add("lesson");
     root.appendChild(crumbs([
       { href: "#/", label: "Каталог" },
@@ -497,20 +934,11 @@
       { href: href(ctx.d.id, ctx.s.id), label: ctx.s.title },
       { href: href(ctx.d.id, ctx.s.id, ctx.g.id), label: ctx.g.title }
     ]));
+    var gen = renderGen;
     root.appendChild(el("p", { class: "kicker" }, ["Урок " + ctx.l.n]));
     root.appendChild(el("h1", {}, [ctx.l.title]));
-    root.appendChild(el("p", { class: "lead" }, [
-      "Файлы к этому уроку ещё не загружены. Ниже места, где они будут стоять."
-    ]));
     root.appendChild(el("h2", { class: "section-label" }, ["Материалы"]));
     var grid = el("div", { class: "slot-grid" });
-    MATERIALS.forEach(function (material) {
-      var slot = el("section", { class: "slot" });
-      slot.appendChild(el("h3", {}, [material.title]));
-      slot.appendChild(el("p", {}, [material.text]));
-      slot.appendChild(el("p", { class: "slot-status" }, ["Пока не добавлено"]));
-      grid.appendChild(slot);
-    });
     root.appendChild(grid);
     var share = el("div", { class: "share" });
     share.appendChild(el("code", { class: "permalink" }, [href(ctx.d.id, ctx.s.id, ctx.g.id, ctx.l.id)]));
@@ -536,6 +964,19 @@
     share.appendChild(button);
     root.appendChild(share);
     main.appendChild(root);
+
+    function draw(record) {
+      if (gen !== renderGen) return;
+      grid.innerHTML = "";
+      MATERIALS.forEach(function (material) {
+        grid.appendChild(renderSlot(material, key, gen, record[material.id]));
+      });
+    }
+
+    loadMaterials(key).then(draw, function () {
+      if (gen !== renderGen) return;
+      grid.appendChild(el("p", { class: "lead" }, ["Материалы сейчас не открываются."]));
+    });
   }
 
   function renderSearch(hits) {
@@ -547,7 +988,7 @@
         : "Ничего не нашлось"
     ]));
     if (!hits.length) {
-      root.appendChild(el("p", { class: "lead" }, ["По этому запросу в черновике ничего нет."]));
+      root.appendChild(el("p", { class: "lead" }, ["По этому запросу ничего не нашлось."]));
       main.appendChild(root);
       return;
     }
@@ -584,7 +1025,7 @@
     root.classList.add("missing");
     root.appendChild(el("p", { class: "kicker" }, ["Каталог"]));
     root.appendChild(el("h1", {}, ["Такой страницы нет"]));
-    root.appendChild(el("p", { class: "lead" }, ["Ссылка не совпала ни с одним уроком черновика."]));
+    root.appendChild(el("p", { class: "lead" }, ["Ссылка не совпала ни с одним уроком."]));
     root.appendChild(el("p", {}, [el("a", { href: "#/" }, ["Вернуться в каталог"])]));
     main.appendChild(root);
   }
@@ -601,13 +1042,15 @@
   }
 
   function ensureOpen(ctx) {
-    if (!ctx || ctx.level === "home" || ctx.level === "missing") return;
+    if (!ctx || !ctx.d || ctx.level === "home" || ctx.level === "missing") return;
     open["d:" + ctx.d.id] = true;
     if (ctx.s) open["s:" + ctx.d.id + "/" + ctx.s.id] = true;
   }
 
   function render(options) {
     options = options || {};
+    renderGen += 1;
+    revokeUrls();
     var ctx = resolve();
     if (options.expandPath) ensureOpen(ctx);
     document.title = pageTitle(ctx);
